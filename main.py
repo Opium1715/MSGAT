@@ -9,9 +9,8 @@ import torch
 from torch.utils.data import DataLoader
 from tqdm import tqdm
 
-from model import TASI_GNN
-from model import TASI_GNN_exp
-from utils.dataloader import DataSet, compute_item_num, compute_max_len
+from model import MSGAT
+from utils.dataloader import DataSet, compute_item_num, compute_max_len, create_relation_graph
 from utils.callback import P_MRR_Record
 
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -61,29 +60,30 @@ def main():
 
     # create dataloader
     train_dataloader = DataLoader(train_dataset, batch_size=opt.batch_size, shuffle=opt.shuffle, num_workers=2,
-                                  collate_fn=)  # 直到被调用前，不会生成数据
-    # for data in train_dataloader:
-    #     print(data)
-    test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False, num_workers=2)
-    # for data in test_dataloader:
-    #     print(data)
+                                  collate_fn=create_relation_graph)  # 直到被调用前，不会生成数据
+    for data in train_dataloader:
+        print(data)
+    test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False, num_workers=2,
+                                 collate_fn=create_relation_graph)
+    for data in test_dataloader:
+        print(data)
 
-    tasi_gnn = None
+    msgat = None
     # model
     if not opt.exp:
         print('original model')
-        tasi_gnn = TASI_GNN(emb_size=opt.emb_size, item_num=item_num, max_len=train_dataset.unique_max_length,
-                            drop_out=opt.dropout, gamma=opt.gamma, theta=opt.theta, top_k=int(opt.batch_size * 0.01),
-                            omega=opt.omega, tau=opt.tau)
+        msgat = MSGAT(emb_size=opt.emb_size, item_num=item_num, max_len=train_dataset.unique_max_length,
+                      drop_out=opt.dropout, gamma=opt.gamma, theta=opt.theta, top_k=int(opt.batch_size * 0.01),
+                      omega=opt.omega, tau=opt.tau)
     else:
         print('exp model')
-        tasi_gnn = TASI_GNN_exp(emb_size=opt.emb_size, item_num=item_num, max_len=train_dataset.unique_max_length,
-                                drop_out=opt.dropout, gamma=opt.gamma, theta=opt.theta,
-                                top_k=int(opt.batch_size * 0.01),
-                                omega=opt.omega, tau=opt.tau)
-    # tasi_gnn.compile()  (pytorch >= 2.0 and run in linux)  编译加速
-    tasi_gnn.to(device=device)
-    adam = torch.optim.Adam(tasi_gnn.parameters(), lr=opt.lr, weight_decay=opt.l2)
+        # msgat = TASI_GNN_exp(emb_size=opt.emb_size, item_num=item_num, max_len=train_dataset.unique_max_length,
+        #                         drop_out=opt.dropout, gamma=opt.gamma, theta=opt.theta,
+        #                         top_k=int(opt.batch_size * 0.01),
+        #                         omega=opt.omega, tau=opt.tau)
+    # msgat.compile()  (pytorch >= 2.0 and run in linux)  编译加速
+    msgat.to(device=device)
+    adam = torch.optim.Adam(msgat.parameters(), lr=opt.lr, weight_decay=opt.l2)
     lr_scheduler = torch.optim.lr_scheduler.StepLR(optimizer=adam,
                                                    step_size=opt.lr_dc_step,
                                                    gamma=opt.lr_dc,
@@ -95,7 +95,7 @@ def main():
     log_dir = os.path.join(log_file, 'log_' + time_str)
     metric_recorder = P_MRR_Record(save_path=log_dir, frequency=1)
 
-    model_train(model=tasi_gnn,
+    model_train(model=msgat,
                 trainDataloader=train_dataloader,
                 valDataloader=test_dataloader,
                 loss_fn=torch.nn.CrossEntropyLoss(),

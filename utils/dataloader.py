@@ -33,7 +33,7 @@ class DataSet(Dataset):
         unique_node, alias_index = torch.unique(data, return_inverse=True)
         unique_node_mask = torch.concat(
             [unique_node != 0,
-             torch.zeros(self.max_length - torch.size(unique_node)[0], dtype=torch.bool)],
+             torch.zeros(self.unique_max_length - unique_node.shape[0], dtype=torch.bool)],
             dim=-1)
         item = torch.concat(
             [unique_node, torch.zeros(self.unique_max_length - unique_node.shape[0], dtype=torch.int64)], dim=-1)
@@ -54,23 +54,29 @@ class DataSet(Dataset):
         return alias_index, A, item, label, mask, unique_node_mask
 
 
-def create_relation_graph(alias_index, A, item, label, mask, unique_node_mask):
-    item = torch.concat(item, dim=0)
-    unique_node_mask = torch.concat(unique_node_mask, dim=0)
-    unique_node_len = torch.sum(unique_node_mask, dim=-1)
-    batch_size = torch.size(mask)[0]
+def create_relation_graph(batch):
+    alias_index = torch.stack([batch[i][0] for i in range(len(batch))], dim=0)
+    A = torch.stack([batch[i][1] for i in range(len(batch))], dim=0)
+    item = torch.stack([batch[i][2] for i in range(len(batch))], dim=0)
+    label = torch.stack([batch[i][3] for i in range(len(batch))], dim=0)
+    mask = torch.stack([batch[i][4] for i in range(len(batch))], dim=0)
+    unique_node_mask = torch.stack([batch[i][5] for i in range(len(batch))], dim=0)
+    # unique_node_len = torch.sum(unique_node_mask, dim=-1)
+    batch_size = mask.shape[0]
     matrix = torch.zeros([batch_size, batch_size], dtype=torch.float32)
-    for i in range(batch_size):
+    for i in range(batch_size - 1):
         target_item = item[i]
         test_item = item[i + 1:]
-        union_len = unique_node_len[i + 1:] + unique_node_len[i]
-        intersection = torch.sum(torch.logical_and(torch.isin(test_item, target_item), unique_node_mask), dim=-1)
+        union_len = torch.tensor([torch.unique(torch.concat([test_item[j], target_item], dim=-1)).shape[0] - 1 for j in
+                                  range(len(test_item))])
+        intersection = torch.sum(torch.logical_and(torch.isin(test_item, target_item), unique_node_mask[i + 1:]),
+                                 dim=-1)
         relation_weights = intersection / union_len
-        matrix[i, i:] = relation_weights
-        matrix[i:, i] = relation_weights
+        matrix[i, i + 1:] = relation_weights
+        matrix[i + 1:, i] = relation_weights
     matrix = matrix + torch.eye(batch_size, dtype=torch.float32)
     degree = torch.diag(1.0 / torch.sum(matrix, dim=-1))
-    return matrix, degree
+    return alias_index, A, item, label, mask, matrix, degree
 
 
 def compute_item_num(sequence):
