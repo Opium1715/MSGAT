@@ -5,7 +5,7 @@ import torch
 from torch.utils.data import Dataset
 
 
-# max_length = 50
+device = "cuda" if torch.cuda.is_available() else "cpu"
 
 
 def compute_unique_max_len(datas):
@@ -76,6 +76,15 @@ def create_relation_graph(batch):
         matrix[i + 1:, i] = relation_weights
     matrix = matrix + torch.eye(batch_size, dtype=torch.float32)
     degree = torch.diag(1.0 / torch.sum(matrix, dim=-1))
+    # to device
+    alias_index = alias_index.to(device)
+    A = A.to(device)
+    item = item.to(device)
+    mask = mask.to(device)
+    label = label.to(device)
+    matrix = matrix.to(device)
+    degree = degree.to(device)
+
     return alias_index, A, item, label, mask, matrix, degree
 
 

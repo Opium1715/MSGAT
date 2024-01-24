@@ -61,12 +61,12 @@ def main():
     # create dataloader
     train_dataloader = DataLoader(train_dataset, batch_size=opt.batch_size, shuffle=opt.shuffle, num_workers=2,
                                   collate_fn=create_relation_graph)  # 直到被调用前，不会生成数据
-    for data in train_dataloader:
-        print(data)
+    # for data in train_dataloader:
+    #     print(data)
     test_dataloader = DataLoader(test_dataset, batch_size=opt.batch_size, shuffle=False, num_workers=2,
                                  collate_fn=create_relation_graph)
-    for data in test_dataloader:
-        print(data)
+    # for data in test_dataloader:
+    #     print(data)
 
     msgat = None
     # model
@@ -119,14 +119,9 @@ def model_train(model, trainDataloader, valDataloader, loss_fn, optimizer, epoch
         with tqdm(total=len(trainDataloader), desc='train: ') as tbar:
             display_dict = {'loss': 0.0,
                             'avg_loss': 0.0}
-            for alias_index, A, item, label, mask in trainDataloader:
-                alias_index = alias_index.to(device)
-                A = A.to(device)
-                item = item.to(device)
-                label = label.to(device)
-                mask = mask.to(device)
+            for alias_index, A, item, label, mask, A_r, D in trainDataloader:
                 optimizer.zero_grad()
-                score = model(alias_index, A, item, mask)
+                score = model(alias_index, A, item, A_r, D, mask)
                 loss = loss_fn(score, label)
                 loss.backward()
                 optimizer.step()
@@ -144,13 +139,8 @@ def model_train(model, trainDataloader, valDataloader, loss_fn, optimizer, epoch
         with torch.no_grad():
             display_dict = {'P@20': 0.0, 'MRR@20': 0.0}
             with tqdm(total=len(valDataloader), postfix={}, desc='test: ') as tbar:
-                for alias_index, A, item, label, mask in valDataloader:
-                    alias_index = alias_index.to(device)
-                    A = A.to(device)
-                    item = item.to(device)
-                    label = label.to(device)
-                    mask = mask.to(device)
-                    score = model(alias_index, A, item, mask)
+                for alias_index, A, item, label, mask, A_r, D in valDataloader:
+                    score = model(alias_index, A, item, A_r, D, mask)
                     # val
                     top_k_values, top_k_indices = torch.topk(score, k=20)
                     # precision
