@@ -6,7 +6,6 @@ from entmax import entmax_bisect
 from torch import nn
 
 
-
 class GGNN(nn.Module):
     def __init__(self, emb_size, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -39,7 +38,7 @@ class S_ATT(nn.Module):
         super().__init__(*args, **kwargs)
         self.head = head
         self.emb_size = emb_size
-        self.attn_head_size = self.emb_size / self.head
+        self.attn_head_size = int(self.emb_size * 2 / self.head)
         self.linear_q = nn.Linear(2 * self.emb_size, 2 * self.emb_size)
         self.drop_out = drop_out
         self.scale = math.sqrt(self.emb_size * 2 / head)
@@ -50,13 +49,15 @@ class S_ATT(nn.Module):
         self.layer_norm = nn.LayerNorm(2 * self.emb_size, eps=1e-12)
         self.drop_q = nn.Dropout(self.drop_out)
         self.drop_attn = nn.Dropout(self.drop_out)
+        self.linear_alpha_s = nn.Linear(int(self.emb_size * 2 / self.head), 1)
 
-    def forward(self, X_target_plus, alpha, mask):
+    def forward(self, X_target_plus, mask):
         batch_size = X_target_plus.shape[0]
         length = X_target_plus.shape[1]
         q = self.drop_q(torch.relu(self.linear_q(X_target_plus)))  # q drop
         k = X_target_plus
         v = X_target_plus
+        # multi-head
         multi_head_q = q.view(batch_size, length, self.head, self.attn_head_size).permute(0, 2, 1, 3).contiguous()
         multi_head_k = k.view(batch_size, length, self.head, self.attn_head_size).permute(0, 2, 3, 1).contiguous()
         multi_head_v = v.view(batch_size, length, self.head, self.attn_head_size).permute(0, 2, 1, 3).contiguous()
@@ -65,10 +66,14 @@ class S_ATT(nn.Module):
         attention_mask = torch.concat([mask, torch.zeros([batch_size, 1], dtype=torch.float32, device='cuda')], dim=-1)
         attention_mask = attention_mask.unsqueeze(1).unsqueeze(1).expand_as(attention_score)
         attention_score = attention_score.masked_fill(attention_mask == 0, -torch.inf)
+        # alpha
+        alpha = torch.sigmoid(self.linear_alpha_s(multi_head_q[:, :, -1, :])) + 1  # [1, 2]  注意用的是线性变换后的q中拆出来的
+        alpha = torch.clip(alpha, min=1 + 1e-5).unsqueeze(-1).expand(-1, -1, X_target_plus.shape[1],
+                                                                     -1)  # entmax不能实现alpha=1时的softmax,所以给个裁切
         attention_score = entmax_bisect(attention_score, alpha=alpha, dim=-1)
         attention_score = self.drop_attn(attention_score)
         attention_result = torch.matmul(attention_score, multi_head_v)
-        attention_result = attention_result.permute(0, 2, 1, 3).contiguous().view(batch_size, length, self.emb_size)
+        attention_result = attention_result.permute(0, 2, 1, 3).contiguous().view(batch_size, length, self.emb_size * 2)
         C_hat = self.layer_norm(self.ffn(attention_result) + attention_result)
         target_emb = C_hat[:, -1, :]
         C = C_hat[:, :-1, :]
@@ -93,7 +98,7 @@ class G_ATT(nn.Module):
         attention_score = attention_score.masked_fill(mask.unsqueeze(-1) == 0, -torch.inf)
         attention_score = entmax_bisect(attention_score, alpha=alpha, dim=1)
         attention_result = torch.matmul(attention_score.transpose(1, 2), v)
-        torch.sum(torch.matmul(attention_result, X), dim=-1)
+        attention_result = torch.sum(torch.matmul(attention_result, X), dim=1)
         return attention_result
 
 
@@ -102,7 +107,7 @@ class GCN(nn.Module):
         super(GCN, self).__init__()
 
     def forward(self, A_r, D, R):  # D要不要求逆
-        return torch.matmul(torch.matmul(torch.inverse(D), A_r), R)
+        return torch.matmul(torch.matmul(D, A_r), R)
 
 
 class SparseTargetAttention(nn.Module):
@@ -155,12 +160,12 @@ class MSGAT(nn.Module):
         self.item_num = item_num
         self.max_len = max_len
         self.dropout = drop_out
-        self.gamma = gamma
+        self.gamma = gamma  # target_enhance
         self.drop_out = nn.Dropout(drop_out)
         self.ggnn_layer = GGNN(self.emb_size)
         self.item_embedding = nn.Embedding(self.item_num + 1, self.emb_size, padding_idx=0, max_norm=1.5)
         self.position_embedding = nn.Embedding(self.max_len, self.emb_size, max_norm=1.5)
-        self.linear_alpha_s = nn.Linear(self.emb_size * 2, 1)
+
         self.linear_alpha_g = nn.Linear(self.emb_size * 2, 1)
         self.sa_layer = S_ATT(self.emb_size, self.dropout, head)
         # self.target_enhance_layer = TargetEnhance(self.emb_size, self.gamma)
@@ -189,19 +194,16 @@ class MSGAT(nn.Module):
                   :]  # broadcast
 
         # soft attention
-        last_index = torch.sum(mask, dim=-1) - 1
+        last_index = torch.sum(mask, dim=-1).to(torch.int64) - 1
         last_click_item = session[torch.arange(batch_size, dtype=torch.int64, device='cuda'), last_index, :]
         H_g = torch.sum(torch.sigmoid(
             self.linear_w1(last_click_item.unsqueeze(1).repeat(1, seq_len, 1) * mask.unsqueeze(-1)) + self.linear_w2(
-                session)) @ session.transpose(1, 0), dim=1)
+                session)), dim=1)
 
         # self attention
         X_target_plus = torch.concat(
             [session, torch.zeros((batch_size, 1, self.emb_size * 2), dtype=torch.float32, device='cuda')], 1)
-        alpha = torch.sigmoid(self.linear_alpha_s(X_target_plus[:, -1, :])) + 1  # [1, 2]
-        alpha = torch.clip(alpha, min=1 + 1e-5).unsqueeze(1).expand(-1, X_target_plus.shape[1],
-                                                                    -1)  # entmax不能实现alpha=1时的softmax,所以给个裁切
-        C, target = self.sa_layer(X_target_plus, alpha)
+        C, target = self.sa_layer(X_target_plus, mask)
 
         # global-attention
         alpha = torch.sigmoid(self.linear_alpha_g(target)) + 1  # [1, 2]
@@ -215,9 +217,9 @@ class MSGAT(nn.Module):
         # GCN
         R_init = torch.sum(item_emb, dim=1)
         R = self.gcn_layer(A_r, D, R_init)
-        alpha = torch.sigmoid(self.linear_alpha_r(target)) + 1
 
         # SparseTargetAttention
+        alpha = torch.sigmoid(self.linear_alpha_r(target)) + 1
         H_relation_att = self.sta_layer(R, alpha, target)
 
         # similarity

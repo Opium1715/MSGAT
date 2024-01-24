@@ -21,7 +21,7 @@ parser.add_argument('--dataset', default='diginetica',
 parser.add_argument('--random_seed', default=2023, help='random_seed')
 parser.add_argument('--batch_size', type=int, default=512, help='input batch size')
 parser.add_argument('--emb_size', type=int, default=100, help='hidden state size')
-parser.add_argument('--dropout', type=float, default=0.4)
+parser.add_argument('--dropout', type=float, default=0.2)
 parser.add_argument('--epoch', type=int, default=30, help='the number of epochs to train for')
 parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--lr_dc', type=float, default=0.1, help='learning rate decay rate')
@@ -32,11 +32,11 @@ parser.add_argument('--valid_portion', type=float, default=0.1,
                     help='split the portion of training set as validation set')
 parser.add_argument('--log_file', default='logs/', help='log dir path')
 parser.add_argument('--shuffle', default=True)
-parser.add_argument('--tau', type=float, default=0.07)
 parser.add_argument('--gamma', type=float, default=1.7)
 parser.add_argument('--theta', type=float, default=1.0)
 parser.add_argument('--omega', type=float, default=1.7)
-parser.add_argument('--exp', type=bool, default=True)
+parser.add_argument('--head', type=int, default=5)
+parser.add_argument('--exp', type=bool, default=False)
 
 opt = parser.parse_args()
 
@@ -74,7 +74,7 @@ def main():
         print('original model')
         msgat = MSGAT(emb_size=opt.emb_size, item_num=item_num, max_len=train_dataset.unique_max_length,
                       drop_out=opt.dropout, gamma=opt.gamma, theta=opt.theta, top_k=int(opt.batch_size * 0.01),
-                      omega=opt.omega, tau=opt.tau)
+                      omega=opt.omega, head=opt.head)
     else:
         print('exp model')
         # msgat = TASI_GNN_exp(emb_size=opt.emb_size, item_num=item_num, max_len=train_dataset.unique_max_length,
@@ -120,6 +120,14 @@ def model_train(model, trainDataloader, valDataloader, loss_fn, optimizer, epoch
             display_dict = {'loss': 0.0,
                             'avg_loss': 0.0}
             for alias_index, A, item, label, mask, A_r, D in trainDataloader:
+                # to device
+                alias_index = alias_index.to(device)
+                A = A.to(device)
+                item = item.to(device)
+                mask = mask.to(device)
+                label = label.to(device)
+                A_r = A_r.to(device)
+                D = D.to(device)
                 optimizer.zero_grad()
                 score = model(alias_index, A, item, A_r, D, mask)
                 loss = loss_fn(score, label)
@@ -140,6 +148,13 @@ def model_train(model, trainDataloader, valDataloader, loss_fn, optimizer, epoch
             display_dict = {'P@20': 0.0, 'MRR@20': 0.0}
             with tqdm(total=len(valDataloader), postfix={}, desc='test: ') as tbar:
                 for alias_index, A, item, label, mask, A_r, D in valDataloader:
+                    alias_index = alias_index.to(device)
+                    A = A.to(device)
+                    item = item.to(device)
+                    mask = mask.to(device)
+                    label = label.to(device)
+                    A_r = A_r.to(device)
+                    D = D.to(device)
                     score = model(alias_index, A, item, A_r, D, mask)
                     # val
                     top_k_values, top_k_indices = torch.topk(score, k=20)
