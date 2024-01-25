@@ -2,8 +2,8 @@ from itertools import chain
 
 import numpy as np
 import torch
+import time
 from torch.utils.data import Dataset
-
 
 device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -61,22 +61,72 @@ def create_relation_graph(batch):
     label = torch.stack([batch[i][3] for i in range(len(batch))], dim=0)
     mask = torch.stack([batch[i][4] for i in range(len(batch))], dim=0)
     unique_node_mask = torch.stack([batch[i][5] for i in range(len(batch))], dim=0)
+
     # unique_node_len = torch.sum(unique_node_mask, dim=-1)
     batch_size = mask.shape[0]
-    matrix = torch.zeros([batch_size, batch_size], dtype=torch.float32)
+    # matrix = torch.zeros([batch_size, batch_size], dtype=torch.float32)
+    # item = item.to('cuda')
+    # unique_node_mask = unique_node_mask.to('cuda')
+    matrix = np.zeros([batch_size, batch_size], dtype=np.float32)
+    # start = time.time()
+    # for i in range(batch_size - 1):
+    #     target_item = item[i]
+    #     test_item = item[i + 1:]
+    #     union_len = torch.tensor([torch.unique(torch.concat([test_item[j], target_item], dim=-1)).shape[0] - 1 for j in
+    #                              range(len(test_item))], device='cuda')
+    #     intersection = torch.sum(torch.logical_and(torch.isin(test_item, target_item), unique_node_mask[i + 1:]),
+    #                              dim=-1)
+    #     relation_weights = intersection / union_len
+    #     matrix[i, i + 1:] = relation_weights
+    #     matrix[i + 1:, i] = relation_weights
+    #
+    # matrix = matrix + torch.eye(batch_size, dtype=torch.float32)
+    # degree = torch.diag(1.0 / torch.sum(matrix, dim=-1))
+    # for i in range(batch_size - 1): 13.1
+    #     target_item = item[i]
+    #     for j in range(i + 1, batch_size):
+    #         unique_len = torch.unique(torch.concat([item[j], target_item], dim=-1)).size(0) - 1
+    #         intersection = torch.sum(torch.logical_and(torch.isin(item[j], target_item), unique_node_mask[j]), dim=-1)
+    #         relation_weights = intersection / unique_len
+    #         matrix[i][j] = relation_weights
+    #         matrix[j][i] = relation_weights
+    # for i in range(batch_size - 1): 3.3
+    #     seq_a = set(np.asarray(item[i]))
+    #     seq_a.discard(0)
+    #     for j in range(i + 1, batch_size):
+    #         seq_b = set(np.asarray(item[j]))
+    #         seq_b.discard(0)
+    #         overlap = seq_a.intersection(seq_b)
+    #         ab_set = seq_a | seq_b
+    #         matrix[i][j] = float(len(overlap)) / float(len(ab_set))
+    #         matrix[j][i] = matrix[i][j]
+    # for i in range(batch_size - 1): 6.9
+    #     target_item = np.asarray(item[i])
+    #     for j in range(i + 1, batch_size):
+    #         test_item = np.asarray(item[j])
+    #         unique_len = len(np.union1d(test_item, target_item)) - 1
+    #         intersection = len(np.intersect1d(test_item, target_item)) - 1
+    #         relation_weights = intersection / unique_len
+    #         matrix[i][j] = relation_weights
+    #         matrix[j][i] = relation_weights
+    unique_node_mask = np.asarray(unique_node_mask)  # 0.99
     for i in range(batch_size - 1):
-        target_item = item[i]
-        test_item = item[i + 1:]
-        union_len = torch.tensor([torch.unique(torch.concat([test_item[j], target_item], dim=-1)).shape[0] - 1 for j in
-                                  range(len(test_item))])
-        intersection = torch.sum(torch.logical_and(torch.isin(test_item, target_item), unique_node_mask[i + 1:]),
-                                 dim=-1)
+        target_item = np.asarray(item[i])
+        test_item = np.asarray(item[i + 1:])
+        union_len = np.asarray([np.unique(np.concatenate((test_item[j], target_item), axis=-1)).shape[0] - 1 for j in
+                                range(len(test_item))])
+        intersection = np.sum(np.logical_and(np.isin(test_item, target_item), unique_node_mask[i + 1:]), axis=-1)
         relation_weights = intersection / union_len
         matrix[i, i + 1:] = relation_weights
         matrix[i + 1:, i] = relation_weights
-    matrix = matrix + torch.eye(batch_size, dtype=torch.float32)
-    degree = torch.diag(1.0 / torch.sum(matrix, dim=-1))
-
+    # end_time = time.time()
+    matrix = matrix + np.eye(batch_size, dtype=np.float32)
+    degree = np.diag(1.0 / np.sum(matrix, axis=-1))
+    # matrix = matrix + torch.eye(batch_size, dtype=torch.float32)
+    # degree = torch.diag(1.0 / torch.sum(matrix, dim=-1))
+    matrix = torch.from_numpy(matrix)
+    degree = torch.from_numpy(degree)
+    # print('total time:', end_time - start)
     return alias_index, A, item, label, mask, matrix, degree
 
 

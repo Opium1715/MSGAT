@@ -121,7 +121,6 @@ class SparseTargetAttention(nn.Module):
         self.linear_Wf = nn.Linear(self.emb_size * 2, self.emb_size)
 
     def forward(self, R, alpha, target):
-        batch_size = target.size(0)
         q = self.linear_Wf(target.unsqueeze(1))
         k = R
         v = R
@@ -139,7 +138,7 @@ class SimilarIntent(nn.Module):
     def __init__(self, theta, top_k, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.theta = theta
-        self.top_k = top_k
+        self.top_k = 3
         self.dropout = nn.Dropout(0.4)
 
     def forward(self, h):
@@ -179,6 +178,7 @@ class MSGAT(nn.Module):
         self.gcn_layer = GCN()
         self.linear_alpha_r = nn.Linear(self.emb_size * 2, 1)
         self.sta_layer = SparseTargetAttention(self.emb_size)
+        self.layer_norm = nn.LayerNorm(self.emb_size * 2, eps=1e-12)
 
     def forward(self, alias_index, A, item, A_r, D, mask):
         batch_size = item.shape[0]
@@ -188,6 +188,7 @@ class MSGAT(nn.Module):
         pos_emb = self.position_embedding(torch.arange(item_len, device='cuda', dtype=torch.int64)).unsqueeze(0).repeat(
             batch_size, 1, 1)
         X = torch.cat([item_emb, pos_emb], dim=-1)
+        X = self.layer_norm(X)
         X = self.ggnn_layer(A, X)
 
         # rebuild to seq
@@ -199,7 +200,7 @@ class MSGAT(nn.Module):
         last_click_item = session[torch.arange(batch_size, dtype=torch.int64, device='cuda'), last_index, :]
         H_g = torch.sigmoid(
             self.linear_w1(last_click_item.unsqueeze(1).repeat(1, seq_len, 1) * mask.unsqueeze(-1)) + self.linear_w2(
-                session))   # 并没有求和
+                session))  # 并没有求和
 
         # self attention
         X_target_plus = torch.concat(
@@ -218,7 +219,7 @@ class MSGAT(nn.Module):
         # GCN
         R_init = torch.sum(item_emb, dim=1)
         R = self.gcn_layer(A_r, D, R_init)
-        R = R.unsqueeze(1).repeat(1,item_len,1)
+        R = R.unsqueeze(1).repeat(1, item_len, 1)
         # SparseTargetAttention
         alpha = torch.sigmoid(self.linear_alpha_r(target)) + 1
         alpha = torch.clip(alpha, 1 + 1e-5).unsqueeze(1)
