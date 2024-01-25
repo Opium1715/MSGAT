@@ -89,16 +89,16 @@ class G_ATT(nn.Module):
         self.linear_Wg0 = nn.Linear(self.emb_size * 2, 1, bias=False)
         self.bias_alpha = nn.Parameter(torch.Tensor(self.emb_size * 2))
 
-    def forward(self, C_target, C, X, alpha, mask):
+    def forward(self, C_target, C, G, alpha, mask):
         q = C_target.unsqueeze(1)
         k = C
-        v = C  # 注意这里不一样
+        v = G  # 注意这里不一样
         attention_score = self.linear_Wg0(torch.relu(self.linear_Wg1(k) + self.linear_Wg2(q) + self.bias_alpha))
         # mask
         attention_score = attention_score.masked_fill(mask.unsqueeze(-1) == 0, -torch.inf)
         attention_score = entmax_bisect(attention_score, alpha=alpha, dim=1)
         attention_result = torch.matmul(attention_score.transpose(1, 2), v)
-        attention_result = torch.sum(torch.matmul(attention_result, X), dim=1)
+        # attention_result = torch.sum(torch.matmul(attention_result, X), dim=1)
         return attention_result
 
 
@@ -114,18 +114,19 @@ class SparseTargetAttention(nn.Module):
     def __init__(self, emb_size):
         super(SparseTargetAttention, self).__init__()
         self.emb_size = emb_size
-        self.linear_Wr1 = nn.Linear(self.emb_size * 2, self.emb_size * 2, bias=False)
-        self.linear_Wr2 = nn.Linear(self.emb_size * 2, self.emb_size * 2, bias=False)
-        self.linear_Wr3 = nn.Linear(self.emb_size * 2, 1, bias=False)
-        self.bias_r = nn.Parameter(torch.Tensor(self.emb_size * 2))
+        self.linear_Wr1 = nn.Linear(self.emb_size, self.emb_size, bias=False)
+        self.linear_Wr2 = nn.Linear(self.emb_size, self.emb_size, bias=False)
+        self.linear_Wr3 = nn.Linear(self.emb_size, 1, bias=False)
+        self.bias_r = nn.Parameter(torch.Tensor(self.emb_size))
         self.linear_Wf = nn.Linear(self.emb_size * 2, self.emb_size)
 
     def forward(self, R, alpha, target):
-        q = self.linear_Wf(target)
+        batch_size = target.size(0)
+        q = self.linear_Wf(target.unsqueeze(1))
         k = R
         v = R
         attention_score = self.linear_Wr3(torch.relu(self.linear_Wr1(k) + self.linear_Wr2(q) + self.bias_r))
-        attention_score = entmax_bisect(attention_score, alpha)  # 没有mask?
+        attention_score = entmax_bisect(attention_score, alpha, dim=1)
         attention_result = torch.matmul(attention_score.transpose(1, 2), v)
         # 某种正则化？
         attention_result = torch.selu(attention_result).squeeze()
@@ -176,7 +177,7 @@ class MSGAT(nn.Module):
         self.linear_w1 = nn.Linear(self.emb_size * 2, self.emb_size * 2, bias=False)
         self.linear_w2 = nn.Linear(self.emb_size * 2, self.emb_size * 2, bias=False)
         self.gcn_layer = GCN()
-        self.linear_alpha_r = nn.Linear(self.emb_size * 2, self.emb_size * 2)
+        self.linear_alpha_r = nn.Linear(self.emb_size * 2, 1)
         self.sta_layer = SparseTargetAttention(self.emb_size)
 
     def forward(self, alias_index, A, item, A_r, D, mask):
@@ -196,9 +197,9 @@ class MSGAT(nn.Module):
         # soft attention
         last_index = torch.sum(mask, dim=-1).to(torch.int64) - 1
         last_click_item = session[torch.arange(batch_size, dtype=torch.int64, device='cuda'), last_index, :]
-        H_g = torch.sum(torch.sigmoid(
+        H_g = torch.sigmoid(
             self.linear_w1(last_click_item.unsqueeze(1).repeat(1, seq_len, 1) * mask.unsqueeze(-1)) + self.linear_w2(
-                session)), dim=1)
+                session))   # 并没有求和
 
         # self attention
         X_target_plus = torch.concat(
@@ -211,15 +212,16 @@ class MSGAT(nn.Module):
         H_g_att = self.ga_layer(target, C, H_g, alpha, mask)
 
         # decoder
-        H_c = self.drop_out(torch.selu(self.linear_wc(torch.concat([H_g_att, target], dim=-1))))
+        H_c = self.drop_out(torch.selu(self.linear_wc(torch.concat([H_g_att.squeeze(1), target], dim=-1))))
         H_c = H_c / torch.norm(H_c, dim=-1, keepdim=True)  # 正则
 
         # GCN
         R_init = torch.sum(item_emb, dim=1)
         R = self.gcn_layer(A_r, D, R_init)
-
+        R = R.unsqueeze(1).repeat(1,item_len,1)
         # SparseTargetAttention
         alpha = torch.sigmoid(self.linear_alpha_r(target)) + 1
+        alpha = torch.clip(alpha, 1 + 1e-5).unsqueeze(1)
         H_relation_att = self.sta_layer(R, alpha, target)
 
         # similarity
