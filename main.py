@@ -25,7 +25,7 @@ parser.add_argument('--dropout', type=float, default=0.2)
 parser.add_argument('--epoch', type=int, default=30, help='the number of epochs to train for')
 parser.add_argument('--lr', type=float, default=1e-3, help='learning rate')
 parser.add_argument('--lr_dc', type=float, default=0.1, help='learning rate decay rate')
-parser.add_argument('--lr_dc_step', type=int, default=4, help='the number of steps after which the learning rate decay')
+parser.add_argument('--lr_dc_step', type=int, default=3, help='the number of steps after which the learning rate decay')
 parser.add_argument('--l2', type=float, default=1e-5, help='l2 penalty')
 parser.add_argument('--patience', type=int, default=3, help='the number of epoch to wait before early stop ')
 parser.add_argument('--valid_portion', type=float, default=0.1,
@@ -59,8 +59,8 @@ def main():
     print('max_len: {}'.format(train_dataset.max_length))
 
     # create dataloader
-    train_dataloader = DataLoader(train_dataset, batch_size=opt.batch_size, shuffle=opt.shuffle, num_workers=4,
-                                  collate_fn=create_relation_graph, prefetch_factor=2)  # 直到被调用前，不会生成数据
+    train_dataloader = DataLoader(train_dataset, batch_size=opt.batch_size, shuffle=opt.shuffle, num_workers=8,
+                                  collate_fn=create_relation_graph, prefetch_factor=3)  # 直到被调用前，不会生成数据
     # for data in train_dataloader:
     #     pass
     # print(prof.key_averages().table(sort_by="self_cpu_time_total"))

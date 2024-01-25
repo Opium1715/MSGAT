@@ -41,7 +41,7 @@ class S_ATT(nn.Module):
         self.attn_head_size = int(self.emb_size * 2 / self.head)
         self.linear_q = nn.Linear(2 * self.emb_size, 2 * self.emb_size)
         self.drop_out = drop_out
-        self.scale = math.sqrt(self.emb_size * 2 / head)
+        self.scale = math.sqrt(self.attn_head_size)
         self.ffn = nn.Sequential(nn.Linear(2 * self.emb_size, 2 * self.emb_size),
                                  nn.ReLU(),
                                  nn.Linear(2 * self.emb_size, 2 * self.emb_size),
@@ -49,7 +49,7 @@ class S_ATT(nn.Module):
         self.layer_norm = nn.LayerNorm(2 * self.emb_size, eps=1e-12)
         self.drop_q = nn.Dropout(self.drop_out)
         self.drop_attn = nn.Dropout(self.drop_out)
-        self.linear_alpha_s = nn.Linear(int(self.emb_size * 2 / self.head), 1)
+        self.linear_alpha_s = nn.Linear(self.attn_head_size, 1)
 
     def forward(self, X_target_plus, mask):
         batch_size = X_target_plus.shape[0]
@@ -63,15 +63,15 @@ class S_ATT(nn.Module):
         multi_head_v = v.view(batch_size, length, self.head, self.attn_head_size).permute(0, 2, 1, 3).contiguous()
         attention_score = torch.matmul(multi_head_q, multi_head_k) / self.scale
         # mask
-        attention_mask = torch.concat([mask, torch.zeros([batch_size, 1], dtype=torch.float32, device='cuda')], dim=-1)
-        attention_mask = attention_mask.unsqueeze(1).unsqueeze(1).expand_as(attention_score)
-        attention_score = attention_score.masked_fill(attention_mask == 0, -torch.inf)
+        # attention_mask = torch.concat([mask, torch.zeros([batch_size, 1], dtype=torch.float32, device='cuda')], dim=-1)
+        # attention_mask = attention_mask.unsqueeze(1).unsqueeze(1).expand_as(attention_score)
+        # attention_score = attention_score.masked_fill(attention_mask == 0, -torch.inf)
         # alpha
         alpha = torch.sigmoid(self.linear_alpha_s(multi_head_q[:, :, -1, :])) + 1  # [1, 2]  注意用的是线性变换后的q中拆出来的
         alpha = torch.clip(alpha, min=1 + 1e-5).unsqueeze(-1).expand(-1, -1, X_target_plus.shape[1],
                                                                      -1)  # entmax不能实现alpha=1时的softmax,所以给个裁切
         attention_score = entmax_bisect(attention_score, alpha=alpha, dim=-1)
-        attention_score = self.drop_attn(attention_score)
+        # attention_score = self.drop_attn(attention_score)
         attention_result = torch.matmul(attention_score, multi_head_v)
         attention_result = attention_result.permute(0, 2, 1, 3).contiguous().view(batch_size, length, self.emb_size * 2)
         C_hat = self.layer_norm(self.ffn(attention_result) + attention_result)
@@ -173,8 +173,8 @@ class MSGAT(nn.Module):
         self.linear_wc = nn.Linear(self.emb_size * 4, self.emb_size)
         self.similar_intent_layer = SimilarIntent(theta, top_k)
         self.omega = omega
-        self.linear_w1 = nn.Linear(self.emb_size * 2, self.emb_size * 2, bias=False)
-        self.linear_w2 = nn.Linear(self.emb_size * 2, self.emb_size * 2, bias=False)
+        self.linear_w1 = nn.Linear(self.emb_size * 2, self.emb_size * 2)
+        self.linear_w2 = nn.Linear(self.emb_size * 2, self.emb_size * 2)
         self.gcn_layer = GCN()
         self.linear_alpha_r = nn.Linear(self.emb_size * 2, 1)
         self.sta_layer = SparseTargetAttention(self.emb_size)
@@ -197,10 +197,8 @@ class MSGAT(nn.Module):
 
         # soft attention
         last_index = torch.sum(mask, dim=-1).to(torch.int64) - 1
-        last_click_item = session[torch.arange(batch_size, dtype=torch.int64, device='cuda'), last_index, :]
-        H_g = torch.sigmoid(
-            self.linear_w1(last_click_item.unsqueeze(1).repeat(1, seq_len, 1) * mask.unsqueeze(-1)) + self.linear_w2(
-                session))  # 并没有求和
+        last_click_item = session[torch.arange(batch_size, dtype=torch.int64, device='cuda'), last_index]
+        H_g = torch.sigmoid(self.linear_w1(last_click_item).unsqueeze(1) + self.linear_w2(session))  # 并没有求和
 
         # self attention
         X_target_plus = torch.concat(
@@ -233,6 +231,6 @@ class MSGAT(nn.Module):
         session_final = H_c + session_neighbor
         item_norm = F.normalize(
             self.item_embedding(torch.arange(1, self.item_num + 1, device='cuda', dtype=torch.int64)), dim=-1)
-        score = torch.matmul(session_final, item_norm.transpose(1, 0))
+        score = 20 * torch.matmul(session_final, item_norm.transpose(1, 0))
 
         return score
